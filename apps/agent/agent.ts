@@ -2,6 +2,7 @@ import { GoogleGenAI } from '@google/genai';
 import { SYSTEM_PROMPT } from './sytemPrompt';
 import { allTools } from './tools/toolSchema';
 import { toolCall } from './tools/toolDefintion';
+import { randomUUIDv7 } from 'bun';
 
 const ai = new GoogleGenAI({});
 
@@ -18,6 +19,7 @@ export async function runAgent(query: string, res?: any) {
     ],
   };
   messgeHistory.push(userQuery);
+  console.log('▸ start', query);
   while (1) {
     const stream = await ai.interactions.create({
       model: 'gemini-3.5-flash',
@@ -26,14 +28,11 @@ export async function runAgent(query: string, res?: any) {
       tools: allTools,
       system_instruction: SYSTEM_PROMPT,
     });
-    // let counter = 0;
     let flagToStop = false;
     for await (const event of stream) {
-      // console.log('[Respnse', ++counter, ']', event);
       if (event.event_type === 'step.start' && event.step.type === 'function_call') {
         const name = event.step.name as keyof typeof toolCall;
         toolToRun.push({ name, id: event.step.id });
-        res.write(`data: ${JSON.stringify({ type: 'tool_call', name })}\n\n`);
       }
       if (event.event_type === 'step.delta' && event.delta.type === 'arguments_delta') {
         const toolDetail = toolToRun.pop();
@@ -41,8 +40,9 @@ export async function runAgent(query: string, res?: any) {
           continue;
         }
         const parseArg = JSON.parse(event.delta.arguments);
-        const { comand } = parseArg;
-        const toolResult = await toolCall[toolDetail.name as keyof typeof toolCall](comand);
+        console.log(`\n⚙ ${toolDetail.name}  ${parseArg.comand ?? JSON.stringify(parseArg)}`); res.write(`data: ${JSON.stringify({ type: 'tool_call', name: toolDetail.name, args: parseArg })}\n\n`);
+        const toolResult = await runAppropriateTool(parseArg, toolDetail, res);
+
         const toolResponse = {
           call_id: toolDetail.id,
           is_error: toolResult.includes('ERROR') ? true : false,
@@ -51,22 +51,20 @@ export async function runAgent(query: string, res?: any) {
           type: 'function_result',
         };
         messgeHistory.push(toolResponse);
-        res.write(
-          `data: ${JSON.stringify({ type: 'tool_result', name: toolDetail.name, toolResult, comand })}\n\n`,
-        );
+        console.log(`✓ result\n${toolResult || '(empty)'}`); res.write(`data: ${JSON.stringify({ type: 'tool_result', name: toolDetail.name, toolResult })}\n\n`);
       }
       if (event.event_type === 'step.delta' && event.delta.type === 'text') {
-        console.log('[ASSISTANT]', event.delta.text);
-        res.write(`data: ${JSON.stringify({ type: 'text', text: event.delta.text })}\n\n`);
+        console.log('▸ text', event.delta.text); res.write(`data: ${JSON.stringify({ type: 'text', text: event.delta.text })}\n\n`);
       }
       if (event.event_type === 'interaction.completed') {
         // TODO : write logic of compaction and summarization as got details about it here
 
         if (event.interaction.status === 'requires_action') {
-          res.write(`data: ${JSON.stringify({ type: 'running' })}\n\n`);
+          console.log('▸ running'); res.write(`data: ${JSON.stringify({ type: 'running' })}\n\n`);
           continue;
         }
         // completed | failed | cancelled | incomplete
+        console.log('▸ done', event.interaction.status);
         flagToStop = true;
         res.end();
         break;
@@ -74,4 +72,23 @@ export async function runAgent(query: string, res?: any) {
     }
     if (flagToStop) break;
   }
+}
+
+async function runAppropriateTool(args: any, toolDetail: any, res?: any) {
+  let toolResult = '';
+  if (toolDetail.name == 'bash_tool') {
+    toolResult = (await toolCall.bash_tool(args.comand)) as string;
+  } else if (toolDetail.name === 'question_tool') {
+    const correlationId = randomUUIDv7();
+    const { question, options } = args;
+    console.log('▸ question', question, options);
+    res.write(
+      `data: ${JSON.stringify({ type: 'question', questionId: correlationId, question, options })}\n\n`,
+    );
+    const answer = (await toolCall.question_tool(correlationId)) as string;
+    console.log('▸ answer received', answer);
+    toolResult = String(answer ?? '');
+  }
+
+  return toolResult;
 }

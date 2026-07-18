@@ -1,5 +1,6 @@
 import express, { type Request, type Response } from 'express';
 import { runAgent } from './agent';
+import { store } from './store/store';
 
 const app = express();
 app.use(express.json());
@@ -28,6 +29,31 @@ app.post('/chat/:projectId', (req: Request, res: Response) => {
     // may be write a way to drop the ai agent or no need to do that
     res.end();
   });
+});
+app.post('/answer/:questionId', async (req: Request, res: Response) => {
+  const { questionId } = req.params;
+  const { answer } = req.body;
+
+  if (!questionId) {
+    return res.status(400).json({
+      msg: 'please provide valid questionId',
+    });
+  }
+
+  const questionResolver = store.get(questionId as string);
+
+  // TODO as remove it becuase question answer should  be necessary , skip is a kind of optiion
+  if (!questionResolver) {
+    return res.status(400).json({
+      msg: 'your time period to answer expire',
+    });
+  }
+
+  console.log('▸ answer', questionId, answer);
+  questionResolver(answer);
+  store.delete(questionId as string);
+
+  res.status(201).json({ msg: 'your response recorded succefully' });
 });
 
 app.listen(8000);
